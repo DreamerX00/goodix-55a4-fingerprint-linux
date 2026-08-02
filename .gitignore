@@ -1,0 +1,10 @@
+# Build artifacts
+/var/tmp/goodix55a4-build/
+/opt/libfprint-goodix/
+
+# Editor / OS noise
+.vscode/
+.idea/
+*.swp
+*~
+.DS_Store
