@@ -1,8 +1,9 @@
-# Goodix 27C6:55A4 Fingerprint Sensor — Linux driver
+# Goodix 55A4 Fingerprint Driver for Linux (goodix-55a4-fingerprint-linux)
 
-Enables the **Goodix 27C6:55A4** fingerprint sensor (USB `27c6:55a4`, found in
-many recent laptops) using the community-patched `libfprint`, working on
-**Ubuntu 26.04**, Fedora, Arch and other mainstream distros.
+Enable the **Goodix 27C6:55A4** fingerprint sensor (**USB `27c6:55a4`**) on
+Linux. One installer for **Ubuntu 26**, **Fedora**, **Arch**, **openSUSE** and
+more — build and swap in the community `libfprint` 55A4 driver, provision the
+sensor's one-time key, and enroll your fingerprint for login.
 
 ## Why is a fix needed?
 
