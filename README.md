@@ -49,11 +49,17 @@ bash install.sh --help          # usage
    pinned to the exact commits the patch was written against.
 3. Installs the resulting library to `/opt/libfprint-goodix/lib64` and adds a
    `fprintd.service` drop-in setting `LD_LIBRARY_PATH`.
-4. Provisions the sensor's one-time TLS-PSK key (`goodix-fp-dump` +
+4. Installs a suspend/resume guard: a systemd unit
+   (`fprintd-sleep-fix.service`) that stops `fprintd` before sleep and
+   restarts it on resume, plus a udev rule disabling USB runtime autosuspend
+   for the sensor. Without it, suspending mid-verify leaves the device
+   claimed by a dead session and every unlock after resume fails with
+   *"Device was already claimed"* until a reboot.
+5. Provisions the sensor's one-time TLS-PSK key (`goodix-fp-dump` +
    `provision_psk.py`). This is a one-time per-sensor step.
-5. Optionally configures PAM so fingerprints unlock at login
+6. Optionally configures PAM so fingerprints unlock at login
    (best-effort per distro).
-6. Verifies the device is now visible to `fprintd`.
+7. Verifies the device is now visible to `fprintd`.
 
 ## Supported distros
 
@@ -81,19 +87,29 @@ The script deliberately does **not** rewrite `/etc/pam.d` on these distros.
 
 ## Uninstall / roll back
 
-The fix touches only the install directory and one systemd drop-in, so
-reverting is trivial:
+Everything the installer adds is removed by one command:
 
 ```bash
-sudo rm -rf /opt/libfprint-goodix \
-            /etc/systemd/system/fprintd.service.d/10-goodix55a4.conf
-sudo systemctl daemon-reload && sudo systemctl restart fprintd.service
+sudo bash uninstall.sh
 ```
 
-The install script also prints this exact undo command when it finishes.
+That deletes the patched library in `/opt/libfprint-goodix`, the fprintd
+drop-in, the `fprintd-sleep-fix.service` unit and the autosuspend udev rule,
+then restarts fprintd on your distro's stock libfprint.
 
 ## Troubleshooting
 
+- **Fingerprint stops working until a reboot (worked before suspend):** this
+  is the stale-claim bug the installer's suspend/resume guard exists for —
+  `journalctl -u fprintd` will show *"Unexpected error while suspending
+  device: ... still busy"* at suspend and *"Device was already claimed"* on
+  every unlock after resume. Check the guard is in place:
+  ```bash
+  systemctl is-enabled fprintd-sleep-fix.service   # should print: enabled
+  ```
+  If it is missing (installed with an older version of this script), re-run
+  `sudo bash install.sh` — it is idempotent. A one-off
+  `sudo systemctl restart fprintd` revives the reader immediately.
 - **`fprintd-list` shows no device:** check the daemon log
   `sudo journalctl -u fprintd.service -b`. The usual cause is the key step
   having been skipped. Re-run provisioning:

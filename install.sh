@@ -13,6 +13,12 @@
 # setup for fingerprint login when possible. Your distro's own libfprint is
 # untouched, so the whole fix is reversible with a single command.
 #
+# It also guards the sensor against suspend/resume: fprintd otherwise leaves
+# the device claimed by a dead session after suspend ("Device was already
+# claimed" on every unlock until a reboot) — a systemd unit stops fprintd
+# before sleep and restarts it on resume, and a udev rule disables USB
+# runtime autosuspend for the sensor.
+#
 # Supported package managers: apt (Debian/Ubuntu), dnf/yum (Fedora/RHEL),
 # zypper (openSUSE), pacman (Arch & friends), apk (Alpine).
 #
@@ -184,6 +190,45 @@ EOF
   systemctl daemon-reload
 }
 
+# fprintd keeps a verify running for the lock screen at all times. On system
+# suspend it fails to pause the device mid-operation ("Unexpected error while
+# suspending device: ... still busy") and the device object stays claimed by a
+# session that no longer exists — every unlock after resume is then refused
+# with "Device was already claimed" until fprintd restarts. To the user that
+# reads as the reader randomly dying until a reboot. Fix: stop fprintd cleanly
+# before sleep, restart it on resume. It is D-Bus-activated, so the restart
+# costs nothing when nobody is asking for it. The unit is started by
+# sleep.target (stopping fprintd), becomes unneeded when sleep.target stops on
+# resume, and its ExecStop brings fprintd back.
+install_sleep_fix() {
+  cat > /etc/systemd/system/fprintd-sleep-fix.service <<'EOF'
+[Unit]
+Description=Release Goodix fingerprint sensor around suspend (stale-claim fix)
+Before=sleep.target
+StopWhenUnneeded=yes
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/bin/systemctl stop fprintd.service
+ExecStop=/usr/bin/systemctl restart fprintd.service
+
+[Install]
+WantedBy=sleep.target
+EOF
+  systemctl daemon-reload
+  systemctl enable -q fprintd-sleep-fix.service
+  # Runtime USB autosuspend (kernel default: 2 s idle) is a second source of
+  # the same "worked yesterday, dead today" flakiness on this sensor; keep it
+  # powered. The rule matches on "add", which only fires at boot or replug —
+  # so trigger with --action=add to apply it to the device already plugged in.
+  echo 'ACTION=="add", SUBSYSTEM=="usb", ATTR{idVendor}=="27c6", ATTR{idProduct}=="55a4", ATTR{power/control}="on"' \
+    > /etc/udev/rules.d/61-goodix-no-autosuspend.rules
+  udevadm control --reload
+  udevadm trigger --action=add --subsystem-match=usb \
+    --attr-match=idVendor=27c6 --attr-match=idProduct=55a4 2>/dev/null || true
+}
+
 restart_fprintd() {
   systemctl stop fprintd.service 2>/dev/null || true
   pkill -TERM -x fprintd 2>/dev/null || true; sleep 2
@@ -229,29 +274,31 @@ main() {
   echo "system: $( . /etc/os-release 2>/dev/null; echo "$PRETTY_NAME" )"
   echo "package manager: $PM"
 
-  echo "== 1/7 install build dependencies =="
+  echo "== 1/8 install build dependencies =="
   step "install deps" install_deps
 
-  echo "== 2/7 build patched libfprint =="
+  echo "== 2/8 build patched libfprint =="
   step "build driver" build_driver
 
-  echo "== 3/7 install for fprintd only =="
+  echo "== 3/8 install for fprintd only =="
   step "install /opt" install_lib
 
-  echo "== 4/7 provision one-time sensor key =="
+  echo "== 4/8 survive suspend/resume =="
+  step_nf "sleep fix"  install_sleep_fix
+
+  echo "== 5/8 provision one-time sensor key =="
   step_nf "provision" provision
 
-  echo "== 5/7 restart fprintd =="
+  echo "== 6/8 restart fprintd =="
   step_nf "restart"    restart_fprintd
 
-  echo "== 6/7 configure PAM =="
+  echo "== 7/8 configure PAM =="
   configure_pam
 
-  echo "== 7/7 verify =="
+  echo "== 8/8 verify =="
   verify
 
   echo
-  echo "DONE. Undo anytime:"
-  echo "  sudo rm -rf $DEST $DROPIN/10-goodix55a4.conf && sudo systemctl daemon-reload"
+  echo "DONE. Undo anytime:  sudo bash uninstall.sh"
 }
 main "$@"
