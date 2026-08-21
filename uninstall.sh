@@ -11,6 +11,7 @@ set -euo pipefail
 
 DEST=/opt/libfprint-goodix
 DROPIN=/etc/systemd/system/fprintd.service.d/10-goodix55a4.conf
+RUNMAX=/etc/systemd/system/fprintd.service.d/20-goodix-runtime-max.conf
 SLEEPFIX=/etc/systemd/system/fprintd-sleep-fix.service
 UDEVRULE=/etc/udev/rules.d/61-goodix-no-autosuspend.rules
 
@@ -18,6 +19,7 @@ UDEVRULE=/etc/udev/rules.d/61-goodix-no-autosuspend.rules
 
 [ -d "$DEST" ] && rm -rf "$DEST" && echo "removed $DEST"
 [ -f "$DROPIN" ] && rm -f "$DROPIN" && echo "removed $DROPIN"
+[ -f "$RUNMAX" ] && rm -f "$RUNMAX" && echo "removed $RUNMAX"
 if [ -f "$SLEEPFIX" ]; then
   systemctl disable -q fprintd-sleep-fix.service 2>/dev/null || true
   rm -f "$SLEEPFIX" && echo "removed $SLEEPFIX"

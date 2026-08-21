@@ -13,11 +13,13 @@
 # setup for fingerprint login when possible. Your distro's own libfprint is
 # untouched, so the whole fix is reversible with a single command.
 #
-# It also guards the sensor against suspend/resume: fprintd otherwise leaves
-# the device claimed by a dead session after suspend ("Device was already
-# claimed" on every unlock until a reboot) — a systemd unit stops fprintd
-# before sleep and restarts it on resume, and a udev rule disables USB
-# runtime autosuspend for the sensor.
+# It also guards the sensor against the two ways it dies until a reboot,
+# both ending in "Device was already claimed" on every unlock:
+#   - suspend/resume: a systemd unit stops fprintd before sleep and restarts
+#     it on resume, and a udev rule disables USB runtime autosuspend;
+#   - leaked claims from a live client (pam_fprintd in gdm-session-worker
+#     cancelled mid-verify, e.g. typing the password while the sensor scans):
+#     RuntimeMaxSec caps fprintd's lifetime, so a leak self-heals in minutes.
 #
 # Supported package managers: apt (Debian/Ubuntu), dnf/yum (Fedora/RHEL),
 # zypper (openSUSE), pacman (Arch & friends), apk (Alpine).
@@ -227,6 +229,20 @@ EOF
   udevadm control --reload
   udevadm trigger --action=add --subsystem-match=usb \
     --attr-match=idVendor=27c6 --attr-match=idProduct=55a4 2>/dev/null || true
+  # Suspend is not the only way to leak a claim: pam_fprintd inside the
+  # long-lived gdm-session-worker (reused for every unlock, alive until
+  # logout) can be cancelled mid-verify — type your password while the sensor
+  # is scanning — and never release the device. fprintd cannot auto-release a
+  # claim whose holder is still alive, so the sensor is dead until fprintd
+  # restarts. Detector: fprintd is D-Bus-activated and idle-exits in ~30s, so
+  # only a held claim keeps it running long. Cap its lifetime; systemd kills a
+  # wedged instance and the next unlock respawns a fresh one in milliseconds.
+  # 600s comfortably outlasts the longest legitimate hold (a 16-touch enroll).
+  cat > "$DROPIN/20-goodix-runtime-max.conf" <<'EOF'
+[Service]
+RuntimeMaxSec=600
+EOF
+  systemctl daemon-reload
 }
 
 restart_fprintd() {

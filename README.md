@@ -49,12 +49,19 @@ bash install.sh --help          # usage
    pinned to the exact commits the patch was written against.
 3. Installs the resulting library to `/opt/libfprint-goodix/lib64` and adds a
    `fprintd.service` drop-in setting `LD_LIBRARY_PATH`.
-4. Installs a suspend/resume guard: a systemd unit
-   (`fprintd-sleep-fix.service`) that stops `fprintd` before sleep and
-   restarts it on resume, plus a udev rule disabling USB runtime autosuspend
-   for the sensor. Without it, suspending mid-verify leaves the device
-   claimed by a dead session and every unlock after resume fails with
-   *"Device was already claimed"* until a reboot.
+4. Installs the reliability guards. Two independent bugs kill the sensor with
+   *"Device was already claimed"* on every unlock until a reboot, and the
+   installer guards against both:
+   - **Suspend/resume:** suspending mid-verify leaves the device claimed by a
+     dead session. A systemd unit (`fprintd-sleep-fix.service`) stops
+     `fprintd` before sleep and restarts it on resume, and a udev rule
+     disables USB runtime autosuspend for the sensor.
+   - **Leaked claims:** typing your password while the sensor is scanning can
+     cancel `pam_fprintd` mid-verify inside GDM's long-lived session worker,
+     which then holds the claim until logout. A drop-in caps `fprintd` with
+     `RuntimeMaxSec=600` — it is D-Bus-activated and idle-exits in ~30 s, so
+     only a stuck claim keeps it alive that long; systemd kills the wedged
+     instance and the next unlock respawns a fresh one.
 5. Provisions the sensor's one-time TLS-PSK key (`goodix-fp-dump` +
    `provision_psk.py`). This is a one-time per-sensor step.
 6. Optionally configures PAM so fingerprints unlock at login
@@ -93,22 +100,25 @@ Everything the installer adds is removed by one command:
 sudo bash uninstall.sh
 ```
 
-That deletes the patched library in `/opt/libfprint-goodix`, the fprintd
-drop-in, the `fprintd-sleep-fix.service` unit and the autosuspend udev rule,
+That deletes the patched library in `/opt/libfprint-goodix`, both fprintd
+drop-ins, the `fprintd-sleep-fix.service` unit and the autosuspend udev rule,
 then restarts fprintd on your distro's stock libfprint.
 
 ## Troubleshooting
 
-- **Fingerprint stops working until a reboot (worked before suspend):** this
-  is the stale-claim bug the installer's suspend/resume guard exists for —
-  `journalctl -u fprintd` will show *"Unexpected error while suspending
-  device: ... still busy"* at suspend and *"Device was already claimed"* on
-  every unlock after resume. Check the guard is in place:
+- **Fingerprint stops working until a reboot:** a stale device claim —
+  `journalctl -u fprintd` shows *"Device was already claimed"* on every
+  attempt. Two known causes, both guarded by the installer: suspend/resume
+  (preceded by *"Unexpected error while suspending device: ... still busy"*)
+  and a claim leaked by GDM when a fingerprint scan is cancelled mid-verify
+  (typically by typing the password while the sensor is scanning — the leak
+  now self-heals within 10 minutes via `RuntimeMaxSec`). Check the guards:
   ```bash
   systemctl is-enabled fprintd-sleep-fix.service   # should print: enabled
+  systemctl show fprintd -p RuntimeMaxUSec          # should print: 10min
   ```
-  If it is missing (installed with an older version of this script), re-run
-  `sudo bash install.sh` — it is idempotent. A one-off
+  If either is missing (installed with an older version of this script),
+  re-run `sudo bash install.sh` — it is idempotent. A one-off
   `sudo systemctl restart fprintd` revives the reader immediately.
 - **`fprintd-list` shows no device:** check the daemon log
   `sudo journalctl -u fprintd.service -b`. The usual cause is the key step
